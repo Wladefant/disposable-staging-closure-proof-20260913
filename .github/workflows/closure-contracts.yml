@@ -1,0 +1,22 @@
+name: Staging closure contracts
+
+on:
+  pull_request:
+    branches: [staging]
+    paths:
+      - '.github/workflows/close-linked-issues.yml'
+      - '.github/workflows/closure-contracts.yml'
+      - '.github/tests/close-linked-issues.test.cjs'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: node --test .github/tests/close-linked-issues.test.cjs

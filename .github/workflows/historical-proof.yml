@@ -1,57 +1,20 @@
-# staging-closure-normalizer: v2
-# Native closing keywords work only on the default branch; our trunk is staging.
-# This replaces the existing normalizer, not a second competing closer.
-#
-# NON-GOALS: this is issue bookkeeping, NOT review, QA, deployment attestation,
-# proof that a defect is fixed, or permission to promote anything. It never sets
-# Project fields (GitHub's own closed-item automation may move a card to Done).
-# Hold labels must be present BEFORE merge. A pending-verification comment is
-# evidence of a merge, never evidence of verification. Remove holds and close
-# manually only after the applicable evidence exists; this is NOT a QA watcher.
-#
-# Explicit closing declarations in body/commit messages, including prose and
-# list items: 'Closes #123' or 'Fixes owner/repo#123'. Each target needs its own
-# verb. No titles, bare mentions, quoted/code examples, cross-repository targets
-# or inferred trailing '#2' in 'Closes #1, #2'. Existing valid inline declarations
-# remain supported; this is not a new issue-template syntax requirement.
-#
-# No historical backfill: the actual merge commit must contain this v2 marker.
-# Existing bot receipts (including legacy ones) block repeat writes/reclosure.
-# If a receipt was posted but closing failed, a replay leaves the issue open
-# for manual reconciliation instead of risking overriding a human reopening.
-# Fork PRs are skipped because pull_request tokens are read-only for forks.
-# Do not change to pull_request_target: this copy must work from staging,
-# without installing anything on the production/default branch.
-# No checkout, eval of fetched code, shell step, PR-title use, or expression
-# interpolation of PR text. API text is parsed as data inside a pinned action.
-name: Close linked issues on staging merge
-
+name: Historical v2 replay proof
 on:
-  pull_request:
-    types: [closed]
-    branches: [staging]
-
+  workflow_dispatch:
 permissions:
-  issues: write
+  contents: read
+  issues: read
   pull-requests: read
-  contents: read # Read this workflow at the actual merge SHA; no checkout.
-
-concurrency:
-  group: staging-issue-closure-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
-  close-linked-issues:
-    if: >-
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'staging' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+  proof:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
-      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
           script: |
+            const historical = (await github.rest.pulls.get({...context.repo, pull_number: 2})).data;
+            context.eventName = 'pull_request';
+            context.payload = {action: 'closed', pull_request: historical};
             const { owner, repo } = context.repo;
             const repository = `${owner}/${repo}`;
             const event = context.payload.pull_request;
@@ -94,7 +57,7 @@ jobs:
               owner, repo, pull_number: pr.number, per_page: 100,
             });
             if (commits.length !== pr.commits) throw new Error('Incomplete commit list; no writes.');
-
+            
             function references(text) {
               const result = new Set();
               let fence = null;
@@ -189,3 +152,11 @@ jobs:
               rows.push([String(number), 'Closed from explicit instruction; not a QA claim']);
             }
             await finish('Processed explicit closing declarations; see per-issue dispositions.');
+            
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const issue = (await github.rest.issues.get({...context.repo, issue_number: 1})).data;
+            const comments = await github.paginate(github.rest.issues.listComments, {...context.repo, issue_number: 1});
+            if (issue.state !== 'open' || comments.filter(c => c.user.login === 'github-actions[bot]').length !== 1) throw new Error('Historical issue changed');
+            core.info('PASS: historical reopened issue stayed open with exactly one original bot receipt; read-only token');
