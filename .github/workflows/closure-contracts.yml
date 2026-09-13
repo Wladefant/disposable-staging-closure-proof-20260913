@@ -1,6 +1,7 @@
 name: Staging closure contracts
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [staging]
     paths:
