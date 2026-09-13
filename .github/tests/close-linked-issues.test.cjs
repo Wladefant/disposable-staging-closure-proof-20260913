@@ -79,7 +79,8 @@ for (const body of ['Only #1', 'Do not close #1', 'Example: Closes #1', '`Closes
 
 test('explicit list declarations and emphasis supported', async () => {
   for (const body of ['- [x] Fixes #1', '**Closes #1**', 'Closes #1, fixes owner/repo#1.',
-    'Closes #1, #2', '- Fixes #1 — explanation with `code`', '### Fixed behavior (closes #1)']) {
+    'Closes #1, #2', '- Fixes #1 — explanation with `code`', '### Fixed behavior (closes #1)',
+    'Resolves #1. Use `<Link>` for navigation.', 'Fixes #1: probabilities summed to >100%.']) {
     const s = scenario(body); await s.execute(); assert.equal(s.calls.close, 1);
   }
 });
