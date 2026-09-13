@@ -1,0 +1,134 @@
+# Close linked issues when a PR merges into `staging`.
+#
+# Why this exists:
+#   GitHub only honours closing keywords ("Closes #123") when a PR merges
+#   into the repository's DEFAULT branch. Our default branch is `main`, but
+#   the Claude-driven cycle completes at `staging` (see CLAUDE.md §"PR
+#   workflow") and promotion to `main` happens separately, often much later.
+#   So every issue fixed via a staging PR stayed open until someone closed it
+#   by hand — and usually nobody did.
+#
+#   This workflow reproduces GitHub's native behaviour for `staging` merges.
+#
+# Scope note:
+#   This does NOT replace the keyword. A PR still has to say "Closes #123" in
+#   its title, body, or one of its commit messages — same syntax, same verbs.
+#   PR #2436 is the cautionary example: it merged to `staging` with no closing
+#   keyword anywhere, so there was nothing to close on either branch.
+#
+# Trigger choice — `pull_request`, NOT `pull_request_target`:
+#   `pull_request_target` only fires when the workflow file exists on the
+#   repository's DEFAULT branch (`main`). This workflow lives on `staging`, so
+#   the pull_request_target version silently never ran: no workflow run, no
+#   error, and `/actions/workflows/close-linked-issues.yml` 404s. Verified the
+#   hard way on PR #2517 — merged into `staging` with `Closes #2513` in the
+#   body, and the issue stayed open.
+#
+#   `pull_request` resolves the workflow from the PR's base branch, so the
+#   `staging` copy runs. Every PR here is same-repo, so GITHUB_TOKEN keeps
+#   write access; a fork PR would get a read-only token and simply no-op,
+#   which is the safe failure.
+#
+#   The job never checks out or executes head-branch code — it reads PR
+#   metadata through the API and nothing else. Do not add a checkout step.
+
+name: Close linked issues on staging merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [staging]
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  close-linked-issues:
+    # Closing a PR without merging must not close anything.
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+
+            // Same verb set GitHub itself recognises.
+            const VERBS = 'close[sd]?|fix(?:e[sd])?|resolve[sd]?';
+
+            // Title + body + every commit message, matching where GitHub
+            // looks for keywords.
+            let text = `${pr.title}\n\n${pr.body || ''}`;
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner, repo, pull_number: pr.number, per_page: 100,
+            });
+            for (const c of commits) text += `\n\n${c.commit.message}`;
+
+            // Drop fenced code blocks so a "Closes #123" inside a quoted
+            // example or a pasted diff doesn't close a real issue.
+            text = text.replace(/```[\s\S]*?```/g, '\n');
+
+            const numbers = new Set();
+            const patterns = [
+              new RegExp(`\\b(?:${VERBS})\\b\\s*:?\\s*#(\\d+)`, 'gi'),
+              new RegExp(
+                `\\b(?:${VERBS})\\b\\s*:?\\s*https?://github\\.com/${owner}/${repo}/issues/(\\d+)`,
+                'gi',
+              ),
+            ];
+            for (const re of patterns) {
+              let m;
+              while ((m = re.exec(text)) !== null) numbers.add(Number(m[1]));
+            }
+
+            if (numbers.size === 0) {
+              core.info(`PR #${pr.number} carries no closing keyword — nothing to close.`);
+              return;
+            }
+
+            const closed = [];
+            for (const number of [...numbers].sort((a, b) => a - b)) {
+              let issue;
+              try {
+                ({ data: issue } = await github.rest.issues.get({ owner, repo, issue_number: number }));
+              } catch (err) {
+                core.warning(`#${number}: cannot read (${err.status}) — skipped.`);
+                continue;
+              }
+              // `issues.get` also resolves PR numbers; don't close those.
+              if (issue.pull_request) {
+                core.info(`#${number} is a pull request — skipped.`);
+                continue;
+              }
+              if (issue.state === 'closed') {
+                core.info(`#${number} already closed — skipped.`);
+                continue;
+              }
+
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body:
+                  `Closed by ${pr.html_url}, merged into \`staging\`.\n\n` +
+                  `_GitHub only auto-closes on merges into the default branch (\`main\`), ` +
+                  `so this was closed by \`.github/workflows/close-linked-issues.yml\`. ` +
+                  `The fix is on \`staging\` and reaches production at the next promotion._`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: number,
+                state: 'closed', state_reason: 'completed',
+              });
+              closed.push(number);
+              core.info(`#${number} closed.`);
+            }
+
+            await core.summary
+              .addHeading(`PR #${pr.number} → staging`, 3)
+              .addRaw(
+                closed.length
+                  ? `Closed: ${closed.map((n) => `#${n}`).join(', ')}`
+                  : 'No issues closed.',
+              )
+              .write();
